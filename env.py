@@ -31,6 +31,10 @@ from pettingzoo import ParallelEnv
 class SearchRescueEnv(ParallelEnv):
     metadata = {"render_modes": ["human"], "name": "search_rescue_v0"}
 
+    # TorchRL internal flag indicating whether observation/action specs can change at runtime.
+    # Our environment has fixed observation and action spaces, so set to False.
+    _has_dynamic_specs: bool = False
+
     def __init__(
         self,
         num_rescuers: int = 2,
