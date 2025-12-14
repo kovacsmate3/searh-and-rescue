@@ -46,7 +46,7 @@ def run_training(cfg) -> None:
         env_cfg.num_safezones = params.num_safezones
 
     # Instantiate environment
-    env: ParallelEnv = SearchRescueEnv(
+    raw_env: ParallelEnv = SearchRescueEnv(
         num_rescuers=env_cfg.num_rescuers,
         num_victims=env_cfg.num_victims,
         num_trees=env_cfg.num_trees,
@@ -60,6 +60,10 @@ def run_training(cfg) -> None:
         safezone_radius=env_cfg.safezone_radius,
         seed=env_cfg.seed,
     )
+    # Wrap our custom environment with TorchRL's PettingZooWrapper to provide
+    # observation_spec and action_spec for compatibility
+    from torchrl.envs import PettingZooWrapper
+    env: ParallelEnv = PettingZooWrapper(raw_env)
     check_env_specs(env)
 
     # Define actor and critic networks
