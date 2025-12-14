@@ -119,7 +119,17 @@ class SearchRescueEnv(ParallelEnv):
     def seed(self, seed: int | None) -> None:
         self.np_random = np.random.default_rng(seed)
 
-    def reset(self, seed: int | None = None, options: dict | None = None) -> Dict[str, np.ndarray]:
+    def reset(
+        self, seed: int | None = None, options: dict | None = None
+    ) -> Tuple[Dict[str, np.ndarray], Dict[str, dict]]:
+        """
+        Reset the environment and return initial observations and info dicts.
+
+        In the PettingZoo parallel API, `reset` should return a tuple of
+        (observations, infos). To remain compatible with TorchRL's
+        PettingZooWrapper, we return a second dict containing empty info
+        dictionaries for each agent.
+        """
         if seed is not None:
             self.seed(seed)
         self.t = 0
@@ -150,9 +160,10 @@ class SearchRescueEnv(ParallelEnv):
         # If fewer safe zones requested, take subset
         if self.num_safezones < 4:
             self.safezone_pos = self.safezone_pos[: self.num_safezones]
-
-        # Return observations for each agent
-        return {agent: self._get_obs(i) for i, agent in enumerate(self.possible_agents)}
+        # Observations
+        observations = {agent: self._get_obs(i) for i, agent in enumerate(self.possible_agents)}
+        infos = {agent: {} for agent in self.possible_agents}
+        return observations, infos
 
     def _get_obs(self, agent_idx: int) -> np.ndarray:
         """Construct observation for a single rescuer agent."""
