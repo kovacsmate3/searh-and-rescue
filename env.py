@@ -71,26 +71,24 @@ class SearchRescueEnv(ParallelEnv):
         # Names of agents: rescuers only; victims are passive entities
         self.possible_agents = [f"rescuer_{i}" for i in range(self.num_rescuers)]
 
-        # Define action space
+        # Define action and observation spaces per agent
         if continuous_actions:
-            # 2D acceleration bounded in [−1, 1]
-            self._action_spaces = {
+            action_spaces = {
                 agent: spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
                 for agent in self.possible_agents
             }
         else:
-            # Discrete actions: noop, up, down, left, right
-            self._action_spaces = {
+            action_spaces = {
                 agent: spaces.Discrete(5) for agent in self.possible_agents
             }
+        self.action_spaces: Dict[str, spaces.Space] = action_spaces
 
-        # Observation dimension: self pos (2) + self vel (2) +
-        # victims (num_victims*2) + other rescuers ((n-1)*2) + trees (num_trees*2) + safezones (num_safezones*2)
         obs_dim = 4 + 2 * self.num_victims + 2 * (self.num_rescuers - 1) + 2 * self.num_trees + 2 * self.num_safezones
-        self._observation_spaces = {
+        observation_spaces = {
             agent: spaces.Box(low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32)
             for agent in self.possible_agents
         }
+        self.observation_spaces: Dict[str, spaces.Space] = observation_spaces
 
         # Internal state
         self.rescuer_pos: np.ndarray  # shape (n, 2)
@@ -102,12 +100,20 @@ class SearchRescueEnv(ParallelEnv):
         self.safezone_pos: np.ndarray  # shape (s, 2)
         self.t: int
 
-    # Properties required by pettingzoo API
-    def observation_spaces(self) -> Dict[str, spaces.Space]:
-        return self._observation_spaces
+    # PettingZoo API:
+    # Instead of defining observation_spaces() and action_spaces() as methods that
+    # return dicts, we rely on the attributes `self.observation_spaces` and
+    # `self.action_spaces` set in __init__. PettingZoo will query
+    # `env.observation_spaces[agent]` and `env.action_spaces[agent]` by default.
+    # We additionally provide per-agent accessors to satisfy torchrl wrappers.
 
-    def action_spaces(self) -> Dict[str, spaces.Space]:
-        return self._action_spaces
+    def observation_space(self, agent: str) -> spaces.Space:
+        """Return the observation space for a specific agent."""
+        return self.observation_spaces[agent]
+
+    def action_space(self, agent: str) -> spaces.Space:
+        """Return the action space for a specific agent."""
+        return self.action_spaces[agent]
 
     # Random seeding
     def seed(self, seed: int | None) -> None:
