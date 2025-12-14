@@ -40,6 +40,10 @@ class SearchRescueEnv(ParallelEnv):
         max_cycles: int = 500,
         vision_radius: float = 1.0,
         continuous_actions: bool = False,
+        collision_penalty: float = 0.1,
+        boundary_penalty: float = 0.05,
+        capture_radius: float = 0.1,
+        safezone_radius: float = 0.2,
         seed: int | None = None,
     ) -> None:
         super().__init__()
@@ -54,6 +58,10 @@ class SearchRescueEnv(ParallelEnv):
         self.max_cycles = max_cycles
         self.vision_radius = vision_radius
         self.continuous_actions = continuous_actions
+        self.collision_penalty = collision_penalty
+        self.boundary_penalty = boundary_penalty
+        self.capture_radius = capture_radius
+        self.safezone_radius = safezone_radius
         self.seed(seed)
 
         # Names of agents: rescuers only; victims are passive entities
@@ -85,6 +93,7 @@ class SearchRescueEnv(ParallelEnv):
         self.rescuer_vel: np.ndarray  # shape (n, 2)
         self.victim_pos: np.ndarray  # shape (m, 2)
         self.victim_rescued: np.ndarray  # shape (m,) bool
+        self.victim_attached: List[int | None]
         self.tree_pos: np.ndarray  # shape (k, 2)
         self.safezone_pos: np.ndarray  # shape (s, 2)
         self.t: int
@@ -111,6 +120,8 @@ class SearchRescueEnv(ParallelEnv):
         if self.num_victims > 0:
             self.victim_pos = self.np_random.uniform(low=-0.5, high=0.5, size=(self.num_victims, 2)).astype(np.float32)
             self.victim_rescued = np.zeros((self.num_victims,), dtype=bool)
+            # Track which rescuer a victim is attached to (None if not captured)
+            self.victim_attached = [None for _ in range(self.num_victims)]
         else:
             self.victim_pos = np.zeros((0, 2), dtype=np.float32)
             self.victim_rescued = np.zeros((0,), dtype=bool)
@@ -228,12 +239,52 @@ class SearchRescueEnv(ParallelEnv):
             # Clip positions to world bounds [-1, 1]
             self.rescuer_pos[idx] = np.clip(self.rescuer_pos[idx], -1.0, 1.0)
 
-        # TODO: update victim dynamics (idle/follow/stop when saved) and check rescue conditions
+        # Update victim dynamics: assign to rescuers when within capture radius
+        if self.num_victims > 0:
+            for v in range(self.num_victims):
+                if self.victim_rescued[v]:
+                    continue
+                attached = self.victim_attached[v]
+                # If not yet attached, check for capture
+                if attached is None:
+                    for idx in range(self.num_rescuers):
+                        dist = np.linalg.norm(self.rescuer_pos[idx] - self.victim_pos[v])
+                        if dist < self.capture_radius:
+                            self.victim_attached[v] = idx
+                            attached = idx
+                            break
+                # If attached, move victim with the rescuer
+                if attached is not None:
+                    self.victim_pos[v] = self.rescuer_pos[attached].copy()
+                    # Check if victim reached any safe zone
+                    for sz in self.safezone_pos:
+                        if np.linalg.norm(self.victim_pos[v] - sz) < self.safezone_radius:
+                            self.victim_rescued[v] = True
+                            self.victim_attached[v] = None
+                            break
 
-        # Determine rewards (placeholder: zero reward per agent)
-        rewards = {agent: 0.0 for agent in self.possible_agents}
+        # Determine rewards
+        rewards: Dict[str, float] = {agent: 0.0 for agent in self.possible_agents}
+        # Negative distance to nearest victim as shaping (optional; simple example)
+        if self.num_victims > 0:
+            for idx, agent in enumerate(self.possible_agents):
+                # compute distance to nearest unrescued victim
+                dists = [np.linalg.norm(self.victim_pos[v] - self.rescuer_pos[idx])
+                         for v in range(self.num_victims) if not self.victim_rescued[v]]
+                if dists:
+                    rewards[agent] += -min(dists)
+        # Penalty for collisions with trees
+        for idx, agent in enumerate(self.possible_agents):
+            for tree in self.tree_pos:
+                if np.linalg.norm(self.rescuer_pos[idx] - tree) < self.capture_radius:
+                    rewards[agent] -= self.collision_penalty
+        # Penalty for boundary closeness
+        for idx, agent in enumerate(self.possible_agents):
+            x, y = self.rescuer_pos[idx]
+            if abs(x) > 0.95 or abs(y) > 0.95:
+                rewards[agent] -= self.boundary_penalty
         # Determine terminations: success when all victims rescued
-        terminated = all(self.victim_rescued) and self.num_victims > 0
+        terminated = (self.num_victims > 0) and all(self.victim_rescued)
         terminations = {agent: terminated for agent in self.possible_agents}
         # Determine truncations: max cycles reached
         truncated = self.t >= self.max_cycles
