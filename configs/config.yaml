@@ -1,8 +1,8 @@
 defaults:
-  - env: env
-  - algo: algo
-  - eval: eval
-  - scenario: scenario
+  - env
+  - algo
+  - eval
+  - scenario
 
 train:
   active: true
