@@ -1,8 +1,8 @@
 import numpy as np
 
-from reimplementation.env import SearchRescueEnv
-from reimplementation.scenarios import ScenarioGenerator
-from reimplementation.metrics import rescues_completed, collision_count, coverage
+from env import SearchRescueEnv
+from scenarios import ScenarioGenerator
+from metrics import rescues_completed, collision_count, coverage
 
 
 def test_action_space_modes():

@@ -9,8 +9,8 @@ or evaluation routines based on config flags. Use `train.active=true` or
 import hydra
 from omegaconf import DictConfig
 
-from .train import run_training
-from .evaluate import run_evaluation
+from train import run_training
+from evaluate import run_evaluation
 
 
 @hydra.main(version_base=None, config_path="configs", config_name="config")

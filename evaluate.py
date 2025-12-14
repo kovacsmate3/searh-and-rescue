@@ -10,12 +10,11 @@ from __future__ import annotations
 
 from typing import List, Dict
 
-import hydra
 from omegaconf import DictConfig
 
-from .env import SearchRescueEnv
-from .scenarios import ScenarioGenerator
-from .metrics import rescues_completed, collision_count, coverage
+from env import SearchRescueEnv
+from scenarios import ScenarioGenerator
+from metrics import rescues_completed, collision_count, coverage
 
 
 def run_evaluation(cfg: DictConfig) -> None:

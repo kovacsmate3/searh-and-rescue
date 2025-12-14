@@ -20,8 +20,8 @@ from torch.distributions import Categorical
 from torchrl.envs import ParallelEnv
 from torchrl.envs.utils import check_env_specs
 
-from .env import SearchRescueEnv
-from .scenarios import ScenarioGenerator
+from env import SearchRescueEnv
+from scenarios import ScenarioGenerator
 
 
 def run_training(cfg) -> None:

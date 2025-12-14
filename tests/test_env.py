@@ -1,6 +1,6 @@
 import numpy as np
 
-from reimplementation.env import SearchRescueEnv
+from env import SearchRescueEnv
 
 
 def test_reset_and_step():
