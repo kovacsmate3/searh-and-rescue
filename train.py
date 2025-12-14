@@ -19,6 +19,7 @@ from torchrl.data.replay_buffers import ReplayBuffer, LazyMemmapStorage
 from torchrl.data import TensorSpec
 
 try:
+    from pettingzoo.mpe import simple_spread_v3
 except ImportError:
     simple_spread_v3 = None
 
@@ -27,6 +28,12 @@ try:
     from .env import SearchRescueEnv
 except Exception:
     SearchRescueEnv = None
+
+# Scenario generator for domain randomization and curriculum
+try:
+    from .scenarios import ScenarioGenerator
+except Exception:
+    ScenarioGenerator = None
 
 
 def make_env(env_cfg: DictConfig) -> ParallelEnv:
@@ -46,6 +53,10 @@ def make_env(env_cfg: DictConfig) -> ParallelEnv:
             max_cycles=env_cfg.max_cycles,
             vision_radius=env_cfg.vision_radius,
             continuous_actions=env_cfg.continuous_actions,
+            collision_penalty=env_cfg.collision_penalty,
+            boundary_penalty=env_cfg.boundary_penalty,
+            capture_radius=env_cfg.capture_radius,
+            safezone_radius=env_cfg.safezone_radius,
             seed=env_cfg.seed,
         )
     # Fallback if pettingzoo is installed
@@ -68,7 +79,30 @@ def make_env(env_cfg: DictConfig) -> ParallelEnv:
 @hydra.main(version_base=None, config_path="configs", config_name="config")
 def main(cfg: DictConfig) -> None:
     # Merge env/algo config from Hydra; Hydra will automatically compose from defaults
-    env_cfg = cfg.env if "env" in cfg else {}  # fallback if env subconfig not present
+    env_cfg = cfg.env if "env" in cfg else {}
+
+    # If scenario config provided, sample random environment parameters or use curriculum
+    if "scenario" in cfg and ScenarioGenerator is not None:
+        scen_cfg = cfg.scenario
+        gen = ScenarioGenerator(
+            num_rescuers=env_cfg.num_rescuers,
+            victim_range=tuple(scen_cfg.victim_range),
+            tree_range=tuple(scen_cfg.tree_range),
+            safezone_range=tuple(scen_cfg.safezone_range),
+            map_scale_range=tuple(scen_cfg.map_scale_range),
+            curriculum_steps=scen_cfg.curriculum_steps,
+            seed=scen_cfg.seed,
+        )
+        # Sample scenario
+        if scen_cfg.curriculum_steps > 0:
+            params = next(gen.curriculum())
+        else:
+            params = gen.sample()
+        # Override environment parameters with sampled scenario
+        env_cfg.num_victims = params.num_victims
+        env_cfg.num_trees = params.num_trees
+        env_cfg.num_safezones = params.num_safezones
+        # Currently map_scale is unused in the environment but kept for future extension
 
     # Instantiate environment
     env = make_env(env_cfg)
