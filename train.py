@@ -109,17 +109,18 @@ def main(cfg: DictConfig) -> None:
     # Validate specs
     check_env_specs(env)
 
-    # Print out specs for debugging
+    # Print out observation and action specs
     print("Observation spec:", env.observation_spec())
     print("Action spec:", env.action_spec())
 
-    # TODO: define actor and critic networks. For CTDE, critic sees concatenated
-    # observations of all agents. The actor is per‑agent.
+    # Define actor and critic networks
     n_agents = len(env.possible_agents)
-
-    # Example network definitions (to be customized):
-    input_dims = env.observation_spec().shape[-1]
-    action_dims = env.action_spec().shape[-1]
+    obs_dim = env.observation_spec().shape[-1]
+    # Discrete action dimension or continuous size
+    if hasattr(env.action_spec(), "n"):
+        action_dim = env.action_spec().n  # discrete actions
+    else:
+        action_dim = env.action_spec().shape[-1]
 
     class PolicyNet(nn.Module):
         def __init__(self, input_dim: int, output_dim: int):
@@ -147,17 +148,159 @@ def main(cfg: DictConfig) -> None:
         def forward(self, obs: torch.Tensor) -> torch.Tensor:
             return self.net(obs)
 
-    # Instantiate networks (placeholder sizes)
-    actor_net = PolicyNet(input_dims, action_dims)
-    critic_net = CriticNet(input_dims * n_agents)
+    # Instantiate networks
+    actor_net = PolicyNet(obs_dim, action_dim)
+    # Critic sees global state (concatenated observations)
+    critic_net = CriticNet(obs_dim * n_agents)
 
-    # Optimizers
     actor_opt = Adam(actor_net.parameters(), lr=cfg.algo.learning_rate)
     critic_opt = Adam(critic_net.parameters(), lr=cfg.algo.learning_rate)
 
-    # TODO: Set up replay buffer and the PPO training loop.
-    print("Initialized actor and critic networks. Ready to implement PPO training loop.")
+    # Start PPO training
+    train_ppo(
+        env=env,
+        actor=actor_net,
+        critic=critic_net,
+        actor_opt=actor_opt,
+        critic_opt=critic_opt,
+        n_agents=n_agents,
+        num_steps=cfg.algo.num_steps,
+        num_epochs=cfg.algo.num_epochs,
+        gamma=cfg.algo.gamma,
+        clip_param=cfg.algo.clip_param,
+    )
 
 
 if __name__ == "__main__":
     main()
+
+
+# === PPO TRAINING LOOP ===
+import math
+from torch.distributions import Categorical, Normal
+from typing import List
+
+def compute_returns(rewards: torch.Tensor, gamma: float) -> torch.Tensor:
+    """Compute discounted returns for a 1D tensor of rewards."""
+    returns = torch.zeros_like(rewards)
+    running_return = 0.0
+    for t in reversed(range(len(rewards))):
+        running_return = rewards[t] + gamma * running_return
+        returns[t] = running_return
+    return returns
+
+
+def train_ppo(
+    env: ParallelEnv,
+    actor: nn.Module,
+    critic: nn.Module,
+    actor_opt: torch.optim.Optimizer,
+    critic_opt: torch.optim.Optimizer,
+    n_agents: int,
+    num_steps: int,
+    num_epochs: int,
+    gamma: float,
+    clip_param: float,
+) -> None:
+    """Simplified PPO training loop for multi‑agent CTDE.
+
+    Args:
+        env: multi‑agent environment implementing ParallelEnv.
+        actor: policy network that maps observations to action logits (discrete).
+        critic: value network that maps concatenated observations to scalar value.
+        actor_opt: optimizer for actor.
+        critic_opt: optimizer for critic.
+        n_agents: number of agents in the environment.
+        num_steps: number of steps to collect per update.
+        num_epochs: number of gradient epochs per update.
+        gamma: discount factor.
+        clip_param: PPO clipping epsilon.
+    """
+    actor.train()
+    critic.train()
+
+    for update in range(10):  # arbitrary number of updates; adjust as needed
+        # Storage lists
+        obs_buffer: List[torch.Tensor] = []
+        actions_buffer: List[torch.Tensor] = []
+        logprobs_buffer: List[torch.Tensor] = []
+        rewards_buffer: List[float] = []
+        values_buffer: List[torch.Tensor] = []
+
+        # Reset env
+        obs_dict = env.reset()
+        # Flatten initial observations into per‑agent tensors
+        obs = torch.stack(
+            [torch.tensor(obs_dict[agent], dtype=torch.float32) for agent in env.possible_agents]
+        )
+        for step in range(num_steps):
+            # Select actions per agent
+            logits = actor(obs)  # shape (n_agents, action_dim)
+            # Categorical distribution for each agent
+            dist = Categorical(logits=logits)
+            actions = dist.sample()  # shape (n_agents,)
+            logprobs = dist.log_prob(actions)
+            # Convert to environment action dict
+            actions_dict = {
+                agent: actions[i].item() for i, agent in enumerate(env.possible_agents)
+            }
+            # Step environment
+            next_obs_dict, reward_dict, terminations, truncations, infos = env.step(actions_dict)
+            # Team reward: sum across agents
+            reward = sum(reward_dict.values())
+            # Store data
+            obs_buffer.append(obs)
+            actions_buffer.append(actions)
+            logprobs_buffer.append(logprobs)
+            rewards_buffer.append(reward)
+            # Compute value estimate using global state
+            global_state = obs.view(1, -1).reshape(-1)
+            value = critic(global_state)
+            values_buffer.append(value.squeeze())
+            # Prepare next obs
+            obs = torch.stack(
+                [torch.tensor(next_obs_dict[agent], dtype=torch.float32) for agent in env.possible_agents]
+            )
+            done = all(terminations.values()) or all(truncations.values())
+            if done:
+                break
+        # Convert lists to tensors
+        rewards_tensor = torch.tensor(rewards_buffer, dtype=torch.float32)
+        values_tensor = torch.stack(values_buffer)
+        logprobs_tensor = torch.stack(logprobs_buffer)
+        # Compute returns and advantages
+        returns = compute_returns(rewards_tensor, gamma)
+        advantages = returns - values_tensor.detach()
+        # Normalize advantages
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        # Flatten actor observations and actions for PPO update
+        actor_obs = torch.cat([o for o in obs_buffer])
+        actor_actions = torch.cat([a for a in actions_buffer])
+        old_logprobs = logprobs_tensor.detach().flatten()
+        # Update policy and value networks
+        for epoch in range(num_epochs):
+            # Forward pass through actor
+            logits = actor(actor_obs)
+            dist = Categorical(logits=logits)
+            new_logprobs = dist.log_prob(actor_actions)
+            entropy = dist.entropy().mean()
+            # Ratio for PPO
+            ratio = (new_logprobs - old_logprobs).exp()
+            # Surrogate losses
+            surr1 = ratio * advantages
+            surr2 = torch.clamp(ratio, 1.0 - clip_param, 1.0 + clip_param) * advantages
+            policy_loss = -torch.min(surr1, surr2).mean() - 0.01 * entropy
+            # Critic loss
+            # Recompute values for critic on stored global states
+            global_states = actor_obs.view(-1, obs.shape[-1]).reshape(-1)
+            values_pred = critic(global_states)
+            value_loss = (returns - values_pred.squeeze()).pow(2).mean()
+            # Update actor
+            actor_opt.zero_grad()
+            policy_loss.backward(retain_graph=True)
+            actor_opt.step()
+            # Update critic
+            critic_opt.zero_grad()
+            value_loss.backward()
+            critic_opt.step()
+        print(f"Update {update}: policy loss {policy_loss.item():.3f}, value loss {value_loss.item():.3f}")
