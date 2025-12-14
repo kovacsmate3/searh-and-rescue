@@ -3,6 +3,7 @@ defaults:
   - algo
   - eval
   - scenario
+  - _self_
 
 train:
   active: true
