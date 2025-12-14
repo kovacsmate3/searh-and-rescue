@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import List, Dict
 
+import hydra
 from omegaconf import DictConfig
 
 from env import SearchRescueEnv
