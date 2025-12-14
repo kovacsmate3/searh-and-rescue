@@ -2,6 +2,7 @@ defaults:
   - env: env
   - algo: algo
   - eval: eval
+  - scenario: scenario
 
 hydra:
   run:
