@@ -6,14 +6,14 @@ from env import SearchRescueEnv
 def test_reset_and_step():
     """Basic smoke test: environment reset and step return valid structures."""
     env = SearchRescueEnv(num_rescuers=2, num_victims=1, num_trees=1, num_safezones=2, max_cycles=10)
-    obs = env.reset(seed=42)
+    obs, infos = env.reset(seed=42)
     # Ensure observations for each agent present
     assert set(obs.keys()) == set(env.possible_agents)
     # Check observation dimensions
     for agent, o in obs.items():
-        assert o.shape == env.observation_spaces()[agent].shape
+        assert o.shape == env.observation_space(agent).shape
     # Take random actions and step
-    actions = {agent: env.action_spaces()[agent].sample() for agent in env.possible_agents}
+    actions = {agent: env.action_space(agent).sample() for agent in env.possible_agents}
     obs, rewards, terminations, truncations, infos = env.step(actions)
     # Check types
     assert isinstance(obs, dict)

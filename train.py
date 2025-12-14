@@ -10,6 +10,7 @@ simplified PPO update loop.
 
 from __future__ import annotations
 
+import math
 from typing import List
 
 import torch
@@ -17,7 +18,7 @@ from torch import nn
 from torch.optim import Adam
 from torch.distributions import Categorical
 
-from torchrl.envs import ParallelEnv
+from pettingzoo import ParallelEnv
 from torchrl.envs.utils import check_env_specs
 
 from env import SearchRescueEnv
@@ -46,7 +47,7 @@ def run_training(cfg) -> None:
         env_cfg.num_safezones = params.num_safezones
 
     # Instantiate environment
-    raw_env: ParallelEnv = SearchRescueEnv(
+    env_kwargs = dict(
         num_rescuers=env_cfg.num_rescuers,
         num_victims=env_cfg.num_victims,
         num_trees=env_cfg.num_trees,
@@ -60,16 +61,21 @@ def run_training(cfg) -> None:
         safezone_radius=env_cfg.safezone_radius,
         seed=env_cfg.seed,
     )
-    # Wrap our custom environment with TorchRL's PettingZooWrapper to provide
-    # observation_spec and action_spec for compatibility
     from torchrl.envs import PettingZooWrapper
-    env: ParallelEnv = PettingZooWrapper(raw_env)
-    check_env_specs(env)
+    spec_env = PettingZooWrapper(SearchRescueEnv(**env_kwargs))
+    check_env_specs(spec_env)
+    spec_env.close()
+    env: ParallelEnv = SearchRescueEnv(**env_kwargs)
 
     # Define actor and critic networks
     n_agents = len(env.possible_agents)
-    obs_dim = env.observation_spec().shape[-1]
-    action_dim = env.action_spec().n if hasattr(env.action_spec(), "n") else env.action_spec().shape[-1]
+    obs_space = env.single_observation_space()
+    obs_dim = int(math.prod(obs_space.shape)) if obs_space.shape else 1
+    action_space = env.single_action_space()
+    if hasattr(action_space, "n"):
+        action_dim = action_space.n
+    else:
+        action_dim = int(math.prod(action_space.shape)) if action_space.shape else 1
 
     class PolicyNet(nn.Module):
         def __init__(self, input_dim: int, output_dim: int) -> None:
@@ -142,20 +148,21 @@ def train_ppo(
     """Simplified PPO training loop for multi‑agent CTDE."""
     actor.train()
     critic.train()
-    for update in range(10):  # number of updates; adjust as needed
+    for update in range(10):
         obs_buffer: List[torch.Tensor] = []
         actions_buffer: List[torch.Tensor] = []
         logprobs_buffer: List[torch.Tensor] = []
         rewards_buffer: List[float] = []
         values_buffer: List[torch.Tensor] = []
-        # env.reset() may return just obs_dict or a tuple (obs_dict, info_dict)
+        global_obs_buffer: List[torch.Tensor] = []
         reset_out = env.reset()
         if isinstance(reset_out, tuple):
-            obs_dict, _info_dict = reset_out  # discard info for training
+            obs_dict, _info_dict = reset_out
         else:
             obs_dict = reset_out
         obs = torch.stack([
-            torch.tensor(obs_dict[agent], dtype=torch.float32) for agent in env.possible_agents
+            torch.tensor(obs_dict[agent], dtype=torch.float32)
+            for agent in env.possible_agents
         ])
         for step in range(num_steps):
             logits = actor(obs)
@@ -163,27 +170,33 @@ def train_ppo(
             actions = dist.sample()
             logprobs = dist.log_prob(actions)
             actions_dict = {agent: actions[i].item() for i, agent in enumerate(env.possible_agents)}
-            next_obs_dict, reward_dict, terminations, truncations, infos = env.step(actions_dict)
+            next_obs_dict, reward_dict, terminations, truncations, *_ = env.step(actions_dict)
             reward = sum(reward_dict.values())
             obs_buffer.append(obs)
             actions_buffer.append(actions)
             logprobs_buffer.append(logprobs)
             global_state = obs.view(-1)
             values_buffer.append(critic(global_state).squeeze())
+            global_obs_buffer.append(global_state.clone())
             rewards_buffer.append(reward)
             obs = torch.stack([
-                torch.tensor(next_obs_dict[agent], dtype=torch.float32) for agent in env.possible_agents
+                torch.tensor(next_obs_dict[agent], dtype=torch.float32)
+                for agent in env.possible_agents
             ])
             if all(terminations.values()) or all(truncations.values()):
                 break
+        if not rewards_buffer:
+            continue
         rewards_tensor = torch.tensor(rewards_buffer, dtype=torch.float32)
         values_tensor = torch.stack(values_buffer)
         logprobs_tensor = torch.stack(logprobs_buffer)
+        global_obs = torch.stack(global_obs_buffer).to(torch.float32)
         returns = compute_returns(rewards_tensor, gamma)
         advantages = returns - values_tensor.detach()
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-        actor_obs = torch.cat([o for o in obs_buffer])
-        actor_actions = torch.cat([a for a in actions_buffer])
+        advantages_expanded = advantages.repeat_interleave(n_agents)
+        actor_obs = torch.cat(obs_buffer)
+        actor_actions = torch.cat(actions_buffer)
         old_logprobs = logprobs_tensor.detach().flatten()
         for epoch in range(num_epochs):
             logits = actor(actor_obs)
@@ -191,10 +204,10 @@ def train_ppo(
             new_logprobs = dist.log_prob(actor_actions)
             entropy = dist.entropy().mean()
             ratio = (new_logprobs - old_logprobs).exp()
-            surr1 = ratio * advantages
-            surr2 = torch.clamp(ratio, 1.0 - clip_param, 1.0 + clip_param) * advantages
+            surr1 = ratio * advantages_expanded
+            surr2 = torch.clamp(ratio, 1.0 - clip_param, 1.0 + clip_param) * advantages_expanded
             policy_loss = -torch.min(surr1, surr2).mean() - 0.01 * entropy
-            values_pred = critic(actor_obs.view(-1)).squeeze()
+            values_pred = critic(global_obs).squeeze(-1)
             value_loss = (returns - values_pred).pow(2).mean()
             actor_opt.zero_grad()
             policy_loss.backward(retain_graph=True)

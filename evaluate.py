@@ -10,12 +10,13 @@ from __future__ import annotations
 
 from typing import List, Dict
 
-import hydra
 from omegaconf import DictConfig
 
 from env import SearchRescueEnv
 from scenarios import ScenarioGenerator
 from metrics import rescues_completed, collision_count, coverage
+from torchrl.envs.utils import check_env_specs
+from visualizer import SearchRescueViewer
 
 
 def run_evaluation(cfg: DictConfig) -> None:
@@ -51,17 +52,31 @@ def run_evaluation(cfg: DictConfig) -> None:
         safezone_radius=env_cfg.safezone_radius,
         seed=env_cfg.seed,
     )
-    # Wrap with TorchRL PettingZooWrapper to conform to TorchRL API (optional for evaluation)
-    try:
-        from torchrl.envs import PettingZooWrapper
-        env = PettingZooWrapper(raw_env)
-    except Exception:
-        env = raw_env
+    from torchrl.envs import PettingZooWrapper
+    spec_env = PettingZooWrapper(SearchRescueEnv(
+        num_rescuers=env_cfg.num_rescuers,
+        num_victims=env_cfg.num_victims,
+        num_trees=env_cfg.num_trees,
+        num_safezones=env_cfg.num_safezones,
+        max_cycles=env_cfg.max_cycles,
+        vision_radius=env_cfg.vision_radius,
+        continuous_actions=env_cfg.continuous_actions,
+        collision_penalty=env_cfg.collision_penalty,
+        boundary_penalty=env_cfg.boundary_penalty,
+        capture_radius=env_cfg.capture_radius,
+        safezone_radius=env_cfg.safezone_radius,
+        seed=env_cfg.seed,
+    ))
+    check_env_specs(spec_env)
+    spec_env.close()
+    env = raw_env
+    viewer: SearchRescueViewer | None = None
+    if getattr(cfg.eval, "render", False):
+        viewer = SearchRescueViewer(env)
     num_episodes = cfg.eval.num_episodes
     episodes_logs: List[Dict[str, float]] = []
     for ep_idx in range(num_episodes):
         obs = env.reset(seed=env_cfg.seed + ep_idx)
-        done = False
         episode_log = {
             "num_victims": env.num_victims,
             "rescued_victims": 0,
@@ -69,8 +84,11 @@ def run_evaluation(cfg: DictConfig) -> None:
             "coverage": 0,
         }
         visited_cells = set()
+        done = False
         while not done:
             actions = {agent: env.action_spaces()[agent].sample() for agent in env.possible_agents}
+            if viewer:
+                viewer.update()
             obs, rewards, terminations, truncations, infos = env.step(actions)
             # Count collisions via negative rewards
             for reward in rewards.values():
@@ -90,3 +108,5 @@ def run_evaluation(cfg: DictConfig) -> None:
     print(f"Rescues completed: {rc:.2f}")
     print(f"Average collisions: {cc:.2f}")
     print(f"Coverage: {cov:.2f}")
+    if viewer:
+        viewer.close()

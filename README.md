@@ -31,6 +31,18 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
+The requirements pin `setuptools<81` to avoid the `pkg_resources` deprecation warning currently emitted by pygame wheels; upgrade once pygame drops that dependency.
+
+### Quick start
+
+With the default Hydra config (`train.active=false`, `eval.active=true`, `eval.render=true`), running the main entry point evaluates a random policy while opening the pygame viewer:
+
+```powershell
+python main.py
+```
+
+To suppress visualization when running on a headless machine, add `eval.render=false` to the command line. Likewise, toggle between modes via `train.active=true` or `eval.active=true`.
+
 ### Training
 
 Run training with default configuration:
@@ -52,6 +64,8 @@ Evaluate a (dummy) random policy over five episodes and report metrics:
 ```bash
 python evaluate.py eval.num_episodes=5
 ```
+
+Set `eval.render=true` (default when using `main.py`) if you also want the pygame window while running `evaluate.py` directly.
 
 ### Docker
 
@@ -99,3 +113,20 @@ The tests check correct operation of environment reset/step and the occlusion lo
 All experiments are driven by Hydra configuration files under `configs/` and can
 be reproduced with fixed seeds. The `Dockerfile` provides an isolated
 environment for consistent results across systems.
+
+## Visualization
+
+To watch the environment in action, install `pygame` (already listed in `requirements.txt`) and run:
+
+```powershell
+cd C:\_git\elte-ik-msc\COLLIEG\assignment2\searh-and-rescue
+python - <<"PY"
+from env import SearchRescueEnv
+from visualizer import run_random_episode
+
+env = SearchRescueEnv()
+run_random_episode(env)
+PY
+```
+
+This opens a pygame window showing rescuers (blue), victims (red), trees (green), and safe zones (yellow outlines) while a random policy acts in the environment. Close the window or press Ctrl+C in the terminal to stop.

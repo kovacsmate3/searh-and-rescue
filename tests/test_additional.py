@@ -41,7 +41,7 @@ def test_victim_capture_and_rescue():
         obs, rewards, terminations, truncations, infos = env.step({"rescuer_0": 0})
         if env.victim_rescued[0]:
             break
-    assert env.victim_rescued[0] is True
+    assert bool(env.victim_rescued[0])
 
 
 def test_scenario_generator_sampling_and_curriculum():

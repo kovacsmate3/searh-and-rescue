@@ -1,6 +1,8 @@
 torch
 torchrl
+pygame>=2.6.0
 pettingzoo
 gymnasium
 hydra-core
 omegaconf
+setuptools<81

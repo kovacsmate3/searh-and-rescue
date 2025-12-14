@@ -30,6 +30,7 @@ from pettingzoo import ParallelEnv
 
 class SearchRescueEnv(ParallelEnv):
     metadata = {"render_modes": ["human"], "name": "search_rescue_v0"}
+    parallel_env = True
 
     # TorchRL internal flag indicating whether observation/action specs can change at runtime.
     # Our environment has fixed observation and action spaces, so set to False.
@@ -70,6 +71,8 @@ class SearchRescueEnv(ParallelEnv):
 
         # Names of agents: rescuers only; victims are passive entities
         self.possible_agents = [f"rescuer_{i}" for i in range(self.num_rescuers)]
+        self.agents: List[str] = []
+        self._agent_name_to_idx = {agent: idx for idx, agent in enumerate(self.possible_agents)}
 
         # Define action and observation spaces per agent
         if continuous_actions:
@@ -81,24 +84,32 @@ class SearchRescueEnv(ParallelEnv):
             action_spaces = {
                 agent: spaces.Discrete(5) for agent in self.possible_agents
             }
-        self.action_spaces: Dict[str, spaces.Space] = action_spaces
+        self._action_spaces: Dict[str, spaces.Space] = action_spaces
+        self._single_action_space = (
+            spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
+            if continuous_actions
+            else spaces.Discrete(5)
+        )
 
         obs_dim = 4 + 2 * self.num_victims + 2 * (self.num_rescuers - 1) + 2 * self.num_trees + 2 * self.num_safezones
         observation_spaces = {
             agent: spaces.Box(low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32)
             for agent in self.possible_agents
         }
-        self.observation_spaces: Dict[str, spaces.Space] = observation_spaces
+        self._observation_spaces: Dict[str, spaces.Space] = observation_spaces
+        self._single_observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32)
 
-        # Internal state
-        self.rescuer_pos: np.ndarray  # shape (n, 2)
-        self.rescuer_vel: np.ndarray  # shape (n, 2)
-        self.victim_pos: np.ndarray  # shape (m, 2)
-        self.victim_rescued: np.ndarray  # shape (m,) bool
-        self.victim_attached: List[int | None]
-        self.tree_pos: np.ndarray  # shape (k, 2)
-        self.safezone_pos: np.ndarray  # shape (s, 2)
-        self.t: int
+    def observation_spaces(self) -> Dict[str, spaces.Space]:
+        return self._observation_spaces
+
+    def action_spaces(self) -> Dict[str, spaces.Space]:
+        return self._action_spaces
+
+    def single_observation_space(self) -> spaces.Space:
+        return self._single_observation_space
+
+    def single_action_space(self) -> spaces.Space:
+        return self._single_action_space
 
     # PettingZoo API:
     # Instead of defining observation_spaces() and action_spaces() as methods that
@@ -109,11 +120,11 @@ class SearchRescueEnv(ParallelEnv):
 
     def observation_space(self, agent: str) -> spaces.Space:
         """Return the observation space for a specific agent."""
-        return self.observation_spaces[agent]
+        return self._observation_spaces[agent]
 
     def action_space(self, agent: str) -> spaces.Space:
         """Return the action space for a specific agent."""
-        return self.action_spaces[agent]
+        return self._action_spaces[agent]
 
     # Random seeding
     def seed(self, seed: int | None) -> None:
@@ -133,6 +144,7 @@ class SearchRescueEnv(ParallelEnv):
         if seed is not None:
             self.seed(seed)
         self.t = 0
+        self.agents = self.possible_agents.copy()
         # Initialize rescuer positions uniformly in square [−0.5, 0.5]^2 and zero velocity
         self.rescuer_pos = self.np_random.uniform(low=-0.5, high=0.5, size=(self.num_rescuers, 2)).astype(np.float32)
         self.rescuer_vel = np.zeros((self.num_rescuers, 2), dtype=np.float32)
@@ -161,8 +173,8 @@ class SearchRescueEnv(ParallelEnv):
         if self.num_safezones < 4:
             self.safezone_pos = self.safezone_pos[: self.num_safezones]
         # Observations
-        observations = {agent: self._get_obs(i) for i, agent in enumerate(self.possible_agents)}
-        infos = {agent: {} for agent in self.possible_agents}
+        observations = {agent: self._get_obs(i) for i, agent in enumerate(self.agents)}
+        infos = {agent: {} for agent in self.agents}
         return observations, infos
 
     def _get_obs(self, agent_idx: int) -> np.ndarray:
@@ -233,7 +245,8 @@ class SearchRescueEnv(ParallelEnv):
         """Apply actions and return next observations, rewards, terminations, truncations, infos."""
         self.t += 1
         # Apply rescuer actions
-        for idx, agent in enumerate(self.possible_agents):
+        for agent in self.agents:
+            idx = self._agent_name_to_idx[agent]
             action = actions.get(agent)
             if action is None:
                 continue
@@ -285,42 +298,43 @@ class SearchRescueEnv(ParallelEnv):
                             break
 
         # Determine rewards
-        rewards: Dict[str, float] = {agent: 0.0 for agent in self.possible_agents}
+        rewards: Dict[str, float] = {agent: 0.0 for agent in self.agents}
         # Negative distance to nearest victim as shaping (optional; simple example)
         if self.num_victims > 0:
-            for idx, agent in enumerate(self.possible_agents):
+            for idx, agent in enumerate(self.agents):
                 # compute distance to nearest unrescued victim
                 dists = [np.linalg.norm(self.victim_pos[v] - self.rescuer_pos[idx])
                          for v in range(self.num_victims) if not self.victim_rescued[v]]
                 if dists:
                     rewards[agent] += -min(dists)
         # Penalty for collisions with trees
-        for idx, agent in enumerate(self.possible_agents):
+        for idx, agent in enumerate(self.agents):
             for tree in self.tree_pos:
                 if np.linalg.norm(self.rescuer_pos[idx] - tree) < self.capture_radius:
                     rewards[agent] -= self.collision_penalty
         # Penalty for boundary closeness
-        for idx, agent in enumerate(self.possible_agents):
+        for idx, agent in enumerate(self.agents):
             x, y = self.rescuer_pos[idx]
             if abs(x) > 0.95 or abs(y) > 0.95:
                 rewards[agent] -= self.boundary_penalty
         # Determine terminations: success when all victims rescued
         terminated = (self.num_victims > 0) and all(self.victim_rescued)
-        terminations = {agent: terminated for agent in self.possible_agents}
+        terminations = {agent: terminated for agent in self.agents}
         # Determine truncations: max cycles reached
         truncated = self.t >= self.max_cycles
-        truncations = {agent: truncated for agent in self.possible_agents}
+        truncations = {agent: truncated for agent in self.agents}
         # Additional info (empty)
-        infos = {agent: {} for agent in self.possible_agents}
+        infos = {agent: {} for agent in self.agents}
         # Next observations
-        observations = {agent: self._get_obs(i) for i, agent in enumerate(self.possible_agents)}
+        observations = {agent: self._get_obs(self._agent_name_to_idx[agent]) for agent in self.agents}
         return observations, rewards, terminations, truncations, infos
 
     def render(self) -> None:
         # Minimal rendering: print positions (could be replaced by matplotlib)
         print(f"t={self.t}")
-        for i, agent in enumerate(self.possible_agents):
-            print(f"{agent}: pos={self.rescuer_pos[i]}, vel={self.rescuer_vel[i]}")
+        for agent in self.agents:
+            idx = self._agent_name_to_idx[agent]
+            print(f"{agent}: pos={self.rescuer_pos[idx]}, vel={self.rescuer_vel[idx]}")
         print(f"victims rescued: {self.victim_rescued}")
 
     def close(self) -> None:
