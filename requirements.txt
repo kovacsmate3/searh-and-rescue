@@ -1,0 +1,6 @@
+torch
+torchrl
+pettingzoo
+gymnasium
+hydra-core
+omegaconf
