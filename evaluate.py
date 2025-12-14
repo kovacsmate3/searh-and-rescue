@@ -37,7 +37,7 @@ def run_evaluation(cfg: DictConfig) -> None:
         env_cfg.num_trees = params.num_trees
         env_cfg.num_safezones = params.num_safezones
 
-    env = SearchRescueEnv(
+    raw_env = SearchRescueEnv(
         num_rescuers=env_cfg.num_rescuers,
         num_victims=env_cfg.num_victims,
         num_trees=env_cfg.num_trees,
@@ -51,6 +51,12 @@ def run_evaluation(cfg: DictConfig) -> None:
         safezone_radius=env_cfg.safezone_radius,
         seed=env_cfg.seed,
     )
+    # Wrap with TorchRL PettingZooWrapper to conform to TorchRL API (optional for evaluation)
+    try:
+        from torchrl.envs import PettingZooWrapper
+        env = PettingZooWrapper(raw_env)
+    except Exception:
+        env = raw_env
     num_episodes = cfg.eval.num_episodes
     episodes_logs: List[Dict[str, float]] = []
     for ep_idx in range(num_episodes):
