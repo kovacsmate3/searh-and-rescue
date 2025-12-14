@@ -1,12 +1,14 @@
 """
-Evaluation script for the Search & Rescue project.
+Evaluation logic for the Search & Rescue project.
 
-This script uses Hydra to load configuration, instantiates the environment
-and a (dummy) agent policy, runs a specified number of evaluation episodes,
-collects metrics (rescues completed, collision count, coverage) and prints
-a summary. Extend this script by loading a trained policy and collecting
-detailed logs as needed.
+This module defines a `run_evaluation` function that executes evaluation
+episodes using the configured environment and a dummy random policy, then
+computes metrics using the provided metrics functions.
 """
+
+from __future__ import annotations
+
+from typing import List, Dict
 
 import hydra
 from omegaconf import DictConfig
@@ -16,11 +18,10 @@ from .scenarios import ScenarioGenerator
 from .metrics import rescues_completed, collision_count, coverage
 
 
-@hydra.main(version_base=None, config_path="configs", config_name="config")
-def main(cfg: DictConfig) -> None:
+def run_evaluation(cfg: DictConfig) -> None:
     env_cfg = cfg.env
-    # Sample scenario for evaluation
-    if "scenario" in cfg:
+    # Apply scenario sampling
+    if hasattr(cfg, "scenario") and cfg.scenario is not None:
         scen_cfg = cfg.scenario
         gen = ScenarioGenerator(
             num_rescuers=env_cfg.num_rescuers,
@@ -31,7 +32,7 @@ def main(cfg: DictConfig) -> None:
             curriculum_steps=scen_cfg.curriculum_steps,
             seed=scen_cfg.seed,
         )
-        params = gen.sample()
+        params = gen.sample() if scen_cfg.curriculum_steps <= 0 else next(gen.curriculum())
         env_cfg.num_victims = params.num_victims
         env_cfg.num_trees = params.num_trees
         env_cfg.num_safezones = params.num_safezones
@@ -50,11 +51,10 @@ def main(cfg: DictConfig) -> None:
         safezone_radius=env_cfg.safezone_radius,
         seed=env_cfg.seed,
     )
-
     num_episodes = cfg.eval.num_episodes
-    episodes_logs = []
+    episodes_logs: List[Dict[str, float]] = []
     for ep_idx in range(num_episodes):
-        obs = env.reset(seed=cfg.env.seed + ep_idx)
+        obs = env.reset(seed=env_cfg.seed + ep_idx)
         done = False
         episode_log = {
             "num_victims": env.num_victims,
@@ -62,36 +62,25 @@ def main(cfg: DictConfig) -> None:
             "collisions": 0,
             "coverage": 0,
         }
-        visited_positions = set()
-        # Dummy random policy: choose random action per agent
+        visited_cells = set()
         while not done:
             actions = {agent: env.action_spaces()[agent].sample() for agent in env.possible_agents}
             obs, rewards, terminations, truncations, infos = env.step(actions)
-            # Log collisions via negative rewards for collision (approximate)
-            for agent, reward in rewards.items():
-                # If reward is negative due to collision or boundary, count as collision
+            # Count collisions via negative rewards
+            for reward in rewards.values():
                 if reward < 0:
                     episode_log["collisions"] += 1
-            # Track coverage: discretize positions into 0.1 grid
             for pos in env.rescuer_pos:
                 cell = tuple((pos / 0.1).astype(int))
-                visited_positions.add(cell)
-            # Check termination/truncation
+                visited_cells.add(cell)
             done = all(terminations.values()) or all(truncations.values())
-        # Count rescued victims
         episode_log["rescued_victims"] = int(env.victim_rescued.sum())
-        episode_log["coverage"] = len(visited_positions)
+        episode_log["coverage"] = len(visited_cells)
         episodes_logs.append(episode_log)
-
-    # Compute metrics
     rc = rescues_completed(episodes_logs)
     cc = collision_count(episodes_logs)
     cov = coverage(episodes_logs)
     print("Evaluation results over", num_episodes, "episodes:")
     print(f"Rescues completed: {rc:.2f}")
     print(f"Average collisions: {cc:.2f}")
-    print(f"Coverage (unique cells visited): {cov:.2f}")
-
-
-if __name__ == "__main__":
-    main()
+    print(f"Coverage: {cov:.2f}")
