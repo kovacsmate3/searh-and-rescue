@@ -1,0 +1,7 @@
+scenario:
+  victim_range: [1, 3]
+  tree_range: [2, 6]
+  safezone_range: [2, 4]
+  map_scale_range: [1.0, 1.0]
+  curriculum_steps: 0
+  seed: 0
