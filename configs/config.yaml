@@ -4,6 +4,12 @@ defaults:
   - eval: eval
   - scenario: scenario
 
+train:
+  active: true
+
+eval:
+  active: false
+
 hydra:
   run:
     dir: logs/${now:%Y-%m-%d_%H-%M-%S}
