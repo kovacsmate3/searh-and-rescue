@@ -13,26 +13,46 @@ import torch
 
 from torch import nn
 from torch.optim import Adam
-from torchrl.envs import PettingZooWrapper, ParallelEnv
+from torchrl.envs import ParallelEnv
 from torchrl.envs.utils import check_env_specs
 from torchrl.data.replay_buffers import ReplayBuffer, LazyMemmapStorage
 from torchrl.data import TensorSpec
 
 try:
-    from pettingzoo.mpe import simple_spread_v3
 except ImportError:
     simple_spread_v3 = None
 
+# Import our custom Search & Rescue environment
+try:
+    from .env import SearchRescueEnv
+except Exception:
+    SearchRescueEnv = None
+
 
 def make_env(env_cfg: DictConfig) -> ParallelEnv:
-    """Create a PettingZoo environment wrapped for TorchRL.
+    """Create the Search & Rescue environment or fallback to simple_spread_v3.
 
-    In the final project you should implement the Search and Rescue
-    environment with proper vision and occlusion logic. Here we fallback to
-    simple_spread_v3 as a placeholder.
+    If the custom environment is available, instantiate it directly. Otherwise
+    fallback to the PettingZoo simple_spread_v3 environment. The returned
+    environment must implement the ParallelEnv interface for TorchRL.
     """
+    # Prefer custom SearchRescueEnv if available
+    if SearchRescueEnv is not None:
+        return SearchRescueEnv(
+            num_rescuers=env_cfg.num_rescuers,
+            num_victims=env_cfg.get("num_victims", 0),
+            num_trees=env_cfg.num_trees,
+            num_safezones=env_cfg.num_safezones,
+            max_cycles=env_cfg.max_cycles,
+            vision_radius=env_cfg.vision_radius,
+            continuous_actions=env_cfg.continuous_actions,
+            seed=env_cfg.seed,
+        )
+    # Fallback if pettingzoo is installed
     if simple_spread_v3 is None:
-        raise ImportError("pettingzoo is not installed. Please install pettingzoo to run training.")
+        raise ImportError(
+            "Neither custom SearchRescueEnv nor simple_spread_v3 is available."
+        )
     env = simple_spread_v3.parallel_env(
         N=env_cfg.num_rescuers,
         local_ratio=0.5,
@@ -40,6 +60,8 @@ def make_env(env_cfg: DictConfig) -> ParallelEnv:
         continuous_actions=env_cfg.continuous_actions,
     )
     env.seed(env_cfg.seed)
+    # Wrap environment into TorchRL wrapper at runtime to provide observation/action specs
+    from torchrl.envs import PettingZooWrapper
     return PettingZooWrapper(env)
 
 
