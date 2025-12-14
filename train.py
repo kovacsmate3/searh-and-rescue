@@ -148,7 +148,12 @@ def train_ppo(
         logprobs_buffer: List[torch.Tensor] = []
         rewards_buffer: List[float] = []
         values_buffer: List[torch.Tensor] = []
-        obs_dict = env.reset()
+        # env.reset() may return just obs_dict or a tuple (obs_dict, info_dict)
+        reset_out = env.reset()
+        if isinstance(reset_out, tuple):
+            obs_dict, _info_dict = reset_out  # discard info for training
+        else:
+            obs_dict = reset_out
         obs = torch.stack([
             torch.tensor(obs_dict[agent], dtype=torch.float32) for agent in env.possible_agents
         ])
